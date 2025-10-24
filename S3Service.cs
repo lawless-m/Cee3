@@ -285,4 +285,181 @@ public class S3Service
             return false;
         }
     }
+
+    /// <summary>
+    /// Checks if a local file is a duplicate of an S3 object by comparing MD5 hashes
+    /// </summary>
+    public async Task<(bool isDuplicate, string? etag)> CheckIfDuplicateAsync(
+        string bucketName,
+        string key,
+        string localFilePath)
+    {
+        try
+        {
+            // Check if object exists in S3
+            if (!await ObjectExistsAsync(bucketName, key))
+            {
+                return (false, null);
+            }
+
+            // Get S3 object metadata
+            var metadata = await GetObjectMetadataAsync(bucketName, key);
+            var s3ETag = metadata.ETag;
+
+            // Check if it's a multipart upload (can't easily compare)
+            if (HashUtility.IsMultipartETag(s3ETag))
+            {
+                Console.WriteLine($"  Note: Object was uploaded as multipart, cannot verify by hash");
+                return (false, s3ETag);
+            }
+
+            // Calculate local file MD5
+            Console.WriteLine($"  Calculating MD5 hash of local file...");
+            var fileInfo = new FileInfo(localFilePath);
+            var progress = new Progress<long>(bytesRead =>
+                HashUtility.DisplayHashProgress(bytesRead, fileInfo.Length));
+
+            var localMD5 = await HashUtility.CalculateMD5WithProgressAsync(localFilePath, progress);
+
+            // Compare hashes
+            bool isDuplicate = HashUtility.IsETagMatch(localMD5, s3ETag);
+
+            return (isDuplicate, s3ETag);
+        }
+        catch (AmazonS3Exception e)
+        {
+            Console.WriteLine($"Error checking for duplicate: {e.Message}");
+            return (false, null);
+        }
+    }
+
+    /// <summary>
+    /// Smart upload that skips uploading if file already exists with same content
+    /// </summary>
+    public async Task<(bool uploaded, string reason)> SmartUploadFileAsync(
+        string bucketName,
+        string key,
+        string localFilePath,
+        Dictionary<string, string>? customMetadata = null,
+        bool forceUpload = false)
+    {
+        try
+        {
+            if (!File.Exists(localFilePath))
+            {
+                return (false, $"File not found: {localFilePath}");
+            }
+
+            // Check for duplicate unless force upload is requested
+            if (!forceUpload)
+            {
+                Console.WriteLine($"Checking if file already exists in S3...");
+                var (isDuplicate, etag) = await CheckIfDuplicateAsync(bucketName, key, localFilePath);
+
+                if (isDuplicate)
+                {
+                    Console.WriteLine($"✓ File already exists with identical content (ETag: {etag})");
+                    Console.WriteLine($"  Skipping upload to save time and bandwidth");
+                    return (false, "Duplicate - skipped");
+                }
+
+                if (etag != null)
+                {
+                    Console.WriteLine($"  File exists but content differs, uploading...");
+                }
+                else
+                {
+                    Console.WriteLine($"  File does not exist in S3, uploading...");
+                }
+            }
+
+            // Proceed with upload
+            bool success = await UploadFileAsync(bucketName, key, localFilePath, customMetadata);
+
+            if (success)
+            {
+                return (true, "Uploaded successfully");
+            }
+            else
+            {
+                return (false, "Upload failed");
+            }
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"Error in smart upload: {e.Message}");
+            return (false, $"Error: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Batch upload multiple files with duplicate detection
+    /// </summary>
+    public async Task<(int uploaded, int skipped, int failed)> BatchSmartUploadAsync(
+        string bucketName,
+        string[] localFilePaths,
+        string keyPrefix = "",
+        bool forceUpload = false)
+    {
+        int uploaded = 0;
+        int skipped = 0;
+        int failed = 0;
+
+        Console.WriteLine($"\n=== Batch Smart Upload ===");
+        Console.WriteLine($"Files to process: {localFilePaths.Length}");
+        Console.WriteLine($"Target bucket: {bucketName}");
+        Console.WriteLine($"Key prefix: {(string.IsNullOrEmpty(keyPrefix) ? "(none)" : keyPrefix)}");
+        Console.WriteLine($"Force upload: {forceUpload}");
+        Console.WriteLine();
+
+        for (int i = 0; i < localFilePaths.Length; i++)
+        {
+            var filePath = localFilePaths[i];
+            var fileName = Path.GetFileName(filePath);
+            var key = string.IsNullOrEmpty(keyPrefix)
+                ? fileName
+                : $"{keyPrefix.TrimEnd('/')}/{fileName}";
+
+            Console.WriteLine($"[{i + 1}/{localFilePaths.Length}] Processing: {fileName}");
+
+            try
+            {
+                var (wasUploaded, reason) = await SmartUploadFileAsync(
+                    bucketName,
+                    key,
+                    filePath,
+                    null,
+                    forceUpload);
+
+                if (wasUploaded)
+                {
+                    uploaded++;
+                }
+                else if (reason.StartsWith("Duplicate"))
+                {
+                    skipped++;
+                }
+                else
+                {
+                    failed++;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"✗ Error processing {fileName}: {ex.Message}");
+                failed++;
+            }
+
+            Console.WriteLine();
+        }
+
+        // Summary
+        Console.WriteLine("=== Batch Upload Summary ===");
+        Console.WriteLine($"  Uploaded: {uploaded}");
+        Console.WriteLine($"  Skipped (duplicates): {skipped}");
+        Console.WriteLine($"  Failed: {failed}");
+        Console.WriteLine($"  Total processed: {localFilePaths.Length}");
+
+        return (uploaded, skipped, failed);
+    }
 }

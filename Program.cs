@@ -123,13 +123,15 @@ try
     Console.WriteLine("9. Check if object exists");
     Console.WriteLine("10. Export metadata to Parquet file");
     Console.WriteLine("11. Display Parquet file info");
+    Console.WriteLine("12. Smart upload (skip duplicates)");
+    Console.WriteLine("13. Batch smart upload (multiple files)");
     Console.WriteLine("0. Exit");
     Console.WriteLine();
 
     bool running = true;
     while (running)
     {
-        Console.Write("Select an operation (0-11): ");
+        Console.Write("Select an operation (0-13): ");
         var choice = Console.ReadLine();
 
         switch (choice)
@@ -166,6 +168,12 @@ try
                 break;
             case "11":
                 await DisplayParquetInfo();
+                break;
+            case "12":
+                await SmartUploadFile(s3Service);
+                break;
+            case "13":
+                await BatchSmartUpload(s3Service);
                 break;
             case "0":
                 running = false;
@@ -485,4 +493,119 @@ async Task DisplayParquetInfo()
     {
         Console.WriteLine($"Error reading Parquet file: {ex.Message}");
     }
+}
+
+async Task SmartUploadFile(S3Service service)
+{
+    Console.Write("\nEnter local file path: ");
+    var localPath = Console.ReadLine();
+
+    Console.Write("Enter destination bucket name: ");
+    var bucketName = Console.ReadLine();
+
+    Console.Write("Enter destination object key: ");
+    var key = Console.ReadLine();
+
+    if (string.IsNullOrWhiteSpace(localPath) || string.IsNullOrWhiteSpace(bucketName) || string.IsNullOrWhiteSpace(key))
+    {
+        Console.WriteLine("All fields are required.");
+        return;
+    }
+
+    if (!File.Exists(localPath))
+    {
+        Console.WriteLine($"File not found: {localPath}");
+        return;
+    }
+
+    Console.Write("Force upload even if duplicate? (y/n): ");
+    bool forceUpload = Console.ReadLine()?.ToLower() == "y";
+
+    Console.Write("Add custom metadata? (y/n): ");
+    Dictionary<string, string>? metadata = null;
+
+    if (Console.ReadLine()?.ToLower() == "y")
+    {
+        metadata = new Dictionary<string, string>();
+        bool addingMetadata = true;
+
+        while (addingMetadata)
+        {
+            Console.Write("  Metadata key (or press Enter to finish): ");
+            var metaKey = Console.ReadLine();
+
+            if (string.IsNullOrWhiteSpace(metaKey))
+            {
+                addingMetadata = false;
+            }
+            else
+            {
+                Console.Write($"  Value for '{metaKey}': ");
+                var metaValue = Console.ReadLine();
+                metadata[metaKey] = metaValue ?? "";
+            }
+        }
+    }
+
+    var (uploaded, reason) = await service.SmartUploadFileAsync(bucketName, key, localPath, metadata, forceUpload);
+
+    if (!uploaded && reason.StartsWith("Duplicate"))
+    {
+        Console.WriteLine($"Result: {reason}");
+        Console.WriteLine("Tip: Use force upload option to override duplicate detection");
+    }
+}
+
+async Task BatchSmartUpload(S3Service service)
+{
+    Console.Write("\nEnter directory path containing files to upload: ");
+    var dirPath = Console.ReadLine();
+
+    if (string.IsNullOrWhiteSpace(dirPath) || !Directory.Exists(dirPath))
+    {
+        Console.WriteLine("Invalid directory path.");
+        return;
+    }
+
+    Console.Write("Enter file pattern (e.g., *.jpg, *.* for all): ");
+    var pattern = Console.ReadLine();
+    if (string.IsNullOrWhiteSpace(pattern))
+    {
+        pattern = "*.*";
+    }
+
+    Console.Write("Enter destination bucket name: ");
+    var bucketName = Console.ReadLine();
+
+    Console.Write("Enter key prefix (optional, e.g., images/): ");
+    var keyPrefix = Console.ReadLine();
+
+    if (string.IsNullOrWhiteSpace(bucketName))
+    {
+        Console.WriteLine("Bucket name is required.");
+        return;
+    }
+
+    Console.Write("Force upload even if duplicates? (y/n): ");
+    bool forceUpload = Console.ReadLine()?.ToLower() == "y";
+
+    // Get files
+    var files = Directory.GetFiles(dirPath, pattern, SearchOption.TopDirectoryOnly);
+
+    if (files.Length == 0)
+    {
+        Console.WriteLine($"No files found matching pattern '{pattern}'");
+        return;
+    }
+
+    Console.WriteLine($"\nFound {files.Length} files to upload.");
+    Console.Write("Proceed with batch upload? (y/n): ");
+
+    if (Console.ReadLine()?.ToLower() != "y")
+    {
+        Console.WriteLine("Batch upload cancelled.");
+        return;
+    }
+
+    await service.BatchSmartUploadAsync(bucketName, files, keyPrefix ?? "", forceUpload);
 }

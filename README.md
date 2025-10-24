@@ -13,6 +13,7 @@ dotnet run            # Run with local S3 (no credentials needed!)
 
 ## Features
 
+### Core Operations
 - **List Buckets** - View all S3 buckets in your AWS account
 - **List Objects** - Browse objects in a bucket with optional prefix filtering
 - **Read Metadata** - View detailed metadata for S3 objects including:
@@ -26,8 +27,20 @@ dotnet run            # Run with local S3 (no credentials needed!)
 - **Delete Objects** - Remove objects from S3 buckets
 - **Copy Objects** - Copy objects within or between S3 buckets
 - **Check Existence** - Verify if an object exists in S3
+
+### Advanced Features
+- **Smart Upload** - Upload files with automatic duplicate detection (saves bandwidth and costs!)
+- **Batch Smart Upload** - Upload multiple files from a directory, skipping duplicates
 - **Export to Parquet** - Export S3 object metadata to Apache Parquet files for analytics
 - **View Parquet Files** - Display information about exported Parquet files
+
+### Duplicate Detection
+Prevent uploading files that already exist with identical content:
+- MD5 hash verification
+- Automatic skip of unchanged files
+- Progress reporting
+- Batch processing support
+- See [DUPLICATE_DETECTION.md](DUPLICATE_DETECTION.md) for details
 
 ## Prerequisites
 
