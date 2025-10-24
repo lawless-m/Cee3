@@ -125,13 +125,14 @@ try
     Console.WriteLine("11. Display Parquet file info");
     Console.WriteLine("12. Smart upload (skip duplicates)");
     Console.WriteLine("13. Batch smart upload (multiple files)");
+    Console.WriteLine("14. View cached ETag info for file");
     Console.WriteLine("0. Exit");
     Console.WriteLine();
 
     bool running = true;
     while (running)
     {
-        Console.Write("Select an operation (0-13): ");
+        Console.Write("Select an operation (0-14): ");
         var choice = Console.ReadLine();
 
         switch (choice)
@@ -174,6 +175,9 @@ try
                 break;
             case "13":
                 await BatchSmartUpload(s3Service);
+                break;
+            case "14":
+                DisplayCachedETagInfo();
                 break;
             case "0":
                 running = false;
@@ -608,4 +612,32 @@ async Task BatchSmartUpload(S3Service service)
     }
 
     await service.BatchSmartUploadAsync(bucketName, files, keyPrefix ?? "", forceUpload);
+}
+
+void DisplayCachedETagInfo()
+{
+    Console.Write("\nEnter file path: ");
+    var filePath = Console.ReadLine();
+
+    if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+    {
+        Console.WriteLine("Invalid file path.");
+        return;
+    }
+
+    ExtendedAttributesCache.DisplayCachedInfo(filePath);
+
+    Console.WriteLine();
+    Console.Write("Clear cached info? (y/n): ");
+    if (Console.ReadLine()?.ToLower() == "y")
+    {
+        if (ExtendedAttributesCache.ClearCache(filePath))
+        {
+            Console.WriteLine("✓ Cached info cleared");
+        }
+        else
+        {
+            Console.WriteLine("✗ Failed to clear cache");
+        }
+    }
 }

@@ -34,13 +34,15 @@ dotnet run            # Run with local S3 (no credentials needed!)
 - **Export to Parquet** - Export S3 object metadata to Apache Parquet files for analytics
 - **View Parquet Files** - Display information about exported Parquet files
 
-### Duplicate Detection
+### Duplicate Detection with ETag Caching
 Prevent uploading files that already exist with identical content:
 - MD5 hash verification
+- **ETag caching** in file extended attributes (NTFS ADS/xattr) for ultra-fast checks
+- Eliminates S3 API calls for unchanged files
 - Automatic skip of unchanged files
 - Progress reporting
 - Batch processing support
-- See [DUPLICATE_DETECTION.md](DUPLICATE_DETECTION.md) for details
+- See [DUPLICATE_DETECTION.md](DUPLICATE_DETECTION.md) and [ETAG_CACHING.md](ETAG_CACHING.md) for details
 
 ## Prerequisites
 

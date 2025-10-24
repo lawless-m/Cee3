@@ -288,6 +288,7 @@ public class S3Service
 
     /// <summary>
     /// Checks if a local file is a duplicate of an S3 object by comparing MD5 hashes
+    /// Uses cached ETag from extended attributes for fast checking
     /// </summary>
     public async Task<(bool isDuplicate, string? etag)> CheckIfDuplicateAsync(
         string bucketName,
@@ -296,6 +297,45 @@ public class S3Service
     {
         try
         {
+            // Step 1: Check cached ETag from extended attributes (fast local check)
+            var cachedInfo = ExtendedAttributesCache.GetCachedInfo(localFilePath);
+
+            if (cachedInfo != null)
+            {
+                Console.WriteLine($"  Found cached ETag in file attributes");
+
+                // Verify the cache is for the same S3 location
+                if (cachedInfo.BucketName == bucketName && cachedInfo.Key == key)
+                {
+                    Console.WriteLine($"  Calculating MD5 to verify file hasn't changed locally...");
+                    var fileInfo = new FileInfo(localFilePath);
+                    var progress = new Progress<long>(bytesRead =>
+                        HashUtility.DisplayHashProgress(bytesRead, fileInfo.Length));
+
+                    var localMD5 = await HashUtility.CalculateMD5WithProgressAsync(localFilePath, progress);
+
+                    // Check if local file matches cached ETag (file unchanged since last upload)
+                    if (HashUtility.IsETagMatch(localMD5, cachedInfo.ETag ?? ""))
+                    {
+                        Console.WriteLine($"  ✓ File unchanged since last upload (cached ETag: {cachedInfo.ETag})");
+                        Console.WriteLine($"  Last uploaded: {cachedInfo.UploadDate?.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
+                        Console.WriteLine($"  Skipping S3 API call - using cached result");
+                        return (true, cachedInfo.ETag);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"  File has changed locally since last upload");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"  Cached info is for different S3 location, re-checking...");
+                }
+            }
+
+            // Step 2: No valid cache or file changed - query S3
+            Console.WriteLine($"  Querying S3 for object metadata...");
+
             // Check if object exists in S3
             if (!await ObjectExistsAsync(bucketName, key))
             {
@@ -313,16 +353,16 @@ public class S3Service
                 return (false, s3ETag);
             }
 
-            // Calculate local file MD5
+            // Calculate local file MD5 if not already done
             Console.WriteLine($"  Calculating MD5 hash of local file...");
-            var fileInfo = new FileInfo(localFilePath);
-            var progress = new Progress<long>(bytesRead =>
-                HashUtility.DisplayHashProgress(bytesRead, fileInfo.Length));
+            var fileInfo2 = new FileInfo(localFilePath);
+            var progress2 = new Progress<long>(bytesRead =>
+                HashUtility.DisplayHashProgress(bytesRead, fileInfo2.Length));
 
-            var localMD5 = await HashUtility.CalculateMD5WithProgressAsync(localFilePath, progress);
+            var localMD5_2 = await HashUtility.CalculateMD5WithProgressAsync(localFilePath, progress2);
 
             // Compare hashes
-            bool isDuplicate = HashUtility.IsETagMatch(localMD5, s3ETag);
+            bool isDuplicate = HashUtility.IsETagMatch(localMD5_2, s3ETag);
 
             return (isDuplicate, s3ETag);
         }
@@ -378,6 +418,32 @@ public class S3Service
 
             if (success)
             {
+                // Cache the ETag in file's extended attributes for future fast lookups
+                try
+                {
+                    Console.WriteLine($"  Retrieving ETag from S3...");
+                    var metadata = await GetObjectMetadataAsync(bucketName, key);
+                    var uploadedETag = metadata.ETag;
+
+                    Console.WriteLine($"  Caching ETag in file attributes for future checks...");
+                    bool cached = ExtendedAttributesCache.CacheETag(
+                        localFilePath,
+                        uploadedETag,
+                        bucketName,
+                        key
+                    );
+
+                    if (cached)
+                    {
+                        Console.WriteLine($"  ✓ ETag cached (future checks will be faster)");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  Note: Could not cache ETag: {ex.Message}");
+                    // Don't fail the upload if caching fails
+                }
+
                 return (true, "Uploaded successfully");
             }
             else
