@@ -10,6 +10,7 @@ var configuration = new ConfigurationBuilder()
     .AddJsonFile("appsettings.json", optional: true)
     .AddJsonFile("appsettings.Development.json", optional: true)
     .AddJsonFile("appsettings.Local.json", optional: true)
+    .AddJsonFile("appsettings.PublicTest.json", optional: true)
     .AddEnvironmentVariables()
     .Build();
 
@@ -17,6 +18,7 @@ var configuration = new ConfigurationBuilder()
 var awsProfile = configuration["AWS:Profile"] ?? "default";
 var awsRegion = configuration["AWS:Region"] ?? "us-east-1";
 var useLocalEndpoint = bool.Parse(configuration["S3:UseLocalEndpoint"] ?? "false");
+var useAnonymousCredentials = bool.Parse(configuration["S3:UseAnonymousCredentials"] ?? "false");
 var localEndpoint = configuration["S3:LocalEndpoint"] ?? "http://localhost:9000";
 var localAccessKey = configuration["S3:LocalAccessKey"] ?? "minioadmin";
 var localSecretKey = configuration["S3:LocalSecretKey"] ?? "minioadmin";
@@ -29,6 +31,10 @@ if (useLocalEndpoint)
 {
     Console.WriteLine($"Mode: LOCAL TESTING (MinIO)");
     Console.WriteLine($"Endpoint: {localEndpoint}");
+}
+else if (useAnonymousCredentials)
+{
+    Console.WriteLine($"Mode: PUBLIC READ (Anonymous)");
 }
 else
 {
@@ -56,7 +62,19 @@ try
         var credentials = new Amazon.Runtime.BasicAWSCredentials(localAccessKey, localSecretKey);
         s3Client = new AmazonS3Client(credentials, config);
     }
-    // Use real AWS S3
+    // Use anonymous credentials for public buckets
+    else if (useAnonymousCredentials)
+    {
+        Console.WriteLine("✓ Connecting with anonymous credentials (public read access)...");
+
+        var config = new AmazonS3Config
+        {
+            RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(awsRegion)
+        };
+
+        s3Client = new AmazonS3Client(new Amazon.Runtime.AnonymousAWSCredentials(), config);
+    }
+    // Use real AWS S3 with credentials
     else
     {
         // Create S3 client using AWS credentials
