@@ -1,0 +1,41 @@
+# Build results
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+
+# User-specific files
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Visual Studio
+.vs/
+
+# .NET
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# Local configuration (may contain sensitive data)
+appsettings.Development.json
+appsettings.Local.json
+*.local.json
+
+# AWS credentials (NEVER commit these!)
+.aws/
+credentials
+*.pem
+*.key
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
