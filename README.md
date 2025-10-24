@@ -2,6 +2,15 @@
 
 A .NET 8.0 console application for interacting with Amazon S3, providing full read/write access to S3 objects and metadata operations.
 
+## Local Testing Available!
+
+**No AWS credentials needed for testing!** Cee3 includes built-in support for local testing using MinIO, an S3-compatible storage server. See [TESTING.md](TESTING.md) for the quick start guide.
+
+```bash
+./setup-test-data.sh  # Start MinIO and create test data
+dotnet run            # Run with local S3 (no credentials needed!)
+```
+
 ## Features
 
 - **List Buckets** - View all S3 buckets in your AWS account
@@ -20,6 +29,11 @@ A .NET 8.0 console application for interacting with Amazon S3, providing full re
 
 ## Prerequisites
 
+### For Local Testing (No AWS Required)
+- .NET 8.0 SDK
+- Docker and Docker Compose
+
+### For AWS S3 Access
 - .NET 8.0 SDK
 - AWS Account with S3 access
 - AWS credentials configured (see Configuration section)

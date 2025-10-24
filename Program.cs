@@ -9,50 +9,88 @@ var configuration = new ConfigurationBuilder()
     .SetBasePath(Directory.GetCurrentDirectory())
     .AddJsonFile("appsettings.json", optional: true)
     .AddJsonFile("appsettings.Development.json", optional: true)
+    .AddJsonFile("appsettings.Local.json", optional: true)
     .AddEnvironmentVariables()
     .Build();
 
 // Get AWS configuration
 var awsProfile = configuration["AWS:Profile"] ?? "default";
 var awsRegion = configuration["AWS:Region"] ?? "us-east-1";
+var useLocalEndpoint = bool.Parse(configuration["S3:UseLocalEndpoint"] ?? "false");
+var localEndpoint = configuration["S3:LocalEndpoint"] ?? "http://localhost:9000";
+var localAccessKey = configuration["S3:LocalAccessKey"] ?? "minioadmin";
+var localSecretKey = configuration["S3:LocalSecretKey"] ?? "minioadmin";
 
 Console.WriteLine("=== Cee3 - Amazon S3 Access Tool ===");
 Console.WriteLine($"AWS Profile: {awsProfile}");
 Console.WriteLine($"AWS Region: {awsRegion}");
+
+if (useLocalEndpoint)
+{
+    Console.WriteLine($"Mode: LOCAL TESTING (MinIO)");
+    Console.WriteLine($"Endpoint: {localEndpoint}");
+}
+else
+{
+    Console.WriteLine($"Mode: AWS S3");
+}
+
 Console.WriteLine();
 
 try
 {
-    // Create S3 client using AWS credentials
-    // This will look for credentials in the following order:
-    // 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
-    // 2. AWS credentials file (~/.aws/credentials)
-    // 3. IAM role (if running on EC2)
+    IAmazonS3 s3Client;
 
-    var credentialProfileStoreChain = new CredentialProfileStoreChain();
-    AWSCredentials? credentials = null;
-
-    if (credentialProfileStoreChain.TryGetAWSCredentials(awsProfile, out credentials))
+    // Use local endpoint (MinIO) for testing
+    if (useLocalEndpoint)
     {
-        Console.WriteLine($"✓ Successfully loaded AWS credentials from profile '{awsProfile}'");
+        Console.WriteLine("✓ Connecting to local S3-compatible server (MinIO)...");
+
+        var config = new AmazonS3Config
+        {
+            ServiceURL = localEndpoint,
+            ForcePathStyle = true, // Required for MinIO
+            AuthenticationRegion = awsRegion
+        };
+
+        var credentials = new Amazon.Runtime.BasicAWSCredentials(localAccessKey, localSecretKey);
+        s3Client = new AmazonS3Client(credentials, config);
     }
+    // Use real AWS S3
     else
     {
-        Console.WriteLine($"⚠ Could not load profile '{awsProfile}', attempting to use environment variables or default credentials...");
-        // Try to get credentials from environment variables or instance profile
-        try
+        // Create S3 client using AWS credentials
+        // This will look for credentials in the following order:
+        // 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+        // 2. AWS credentials file (~/.aws/credentials)
+        // 3. IAM role (if running on EC2)
+
+        var credentialProfileStoreChain = new CredentialProfileStoreChain();
+        AWSCredentials? credentials = null;
+
+        if (credentialProfileStoreChain.TryGetAWSCredentials(awsProfile, out credentials))
         {
-            credentials = new Amazon.Runtime.EnvironmentVariablesAWSCredentials();
+            Console.WriteLine($"✓ Successfully loaded AWS credentials from profile '{awsProfile}'");
         }
-        catch
+        else
         {
-            // If environment variables aren't set, this will throw an exception
-            // In that case, let the S3 client use its default credential chain
-            credentials = null!;
+            Console.WriteLine($"⚠ Could not load profile '{awsProfile}', attempting to use environment variables or default credentials...");
+            // Try to get credentials from environment variables or instance profile
+            try
+            {
+                credentials = new Amazon.Runtime.EnvironmentVariablesAWSCredentials();
+            }
+            catch
+            {
+                // If environment variables aren't set, this will throw an exception
+                // In that case, let the S3 client use its default credential chain
+                credentials = null!;
+            }
         }
+
+        s3Client = new AmazonS3Client(credentials, Amazon.RegionEndpoint.GetBySystemName(awsRegion));
     }
 
-    var s3Client = new AmazonS3Client(credentials, Amazon.RegionEndpoint.GetBySystemName(awsRegion));
     var s3Service = new S3Service(s3Client);
 
     Console.WriteLine("\n=== Available Operations ===");
