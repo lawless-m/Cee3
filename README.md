@@ -26,6 +26,8 @@ dotnet run            # Run with local S3 (no credentials needed!)
 - **Delete Objects** - Remove objects from S3 buckets
 - **Copy Objects** - Copy objects within or between S3 buckets
 - **Check Existence** - Verify if an object exists in S3
+- **Export to Parquet** - Export S3 object metadata to Apache Parquet files for analytics
+- **View Parquet Files** - Display information about exported Parquet files
 
 ## Prerequisites
 

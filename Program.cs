@@ -121,13 +121,15 @@ try
     Console.WriteLine("7. Delete an object");
     Console.WriteLine("8. Copy an object");
     Console.WriteLine("9. Check if object exists");
+    Console.WriteLine("10. Export metadata to Parquet file");
+    Console.WriteLine("11. Display Parquet file info");
     Console.WriteLine("0. Exit");
     Console.WriteLine();
 
     bool running = true;
     while (running)
     {
-        Console.Write("Select an operation (0-9): ");
+        Console.Write("Select an operation (0-11): ");
         var choice = Console.ReadLine();
 
         switch (choice)
@@ -158,6 +160,12 @@ try
                 break;
             case "9":
                 await CheckExists(s3Service);
+                break;
+            case "10":
+                await ExportMetadataToParquet(s3Service);
+                break;
+            case "11":
+                await DisplayParquetInfo();
                 break;
             case "0":
                 running = false;
@@ -423,5 +431,58 @@ async Task CheckExists(S3Service service)
     else
     {
         Console.WriteLine($"✗ Object does not exist: s3://{bucketName}/{key}");
+    }
+}
+
+async Task ExportMetadataToParquet(S3Service service)
+{
+    Console.Write("\nEnter bucket name: ");
+    var bucketName = Console.ReadLine();
+
+    Console.Write("Enter prefix (optional, press Enter to skip): ");
+    var prefix = Console.ReadLine();
+
+    Console.Write("Enter output Parquet file path (e.g., /tmp/metadata.parquet): ");
+    var outputPath = Console.ReadLine();
+
+    if (string.IsNullOrWhiteSpace(bucketName) || string.IsNullOrWhiteSpace(outputPath))
+    {
+        Console.WriteLine("Bucket name and output path are required.");
+        return;
+    }
+
+    try
+    {
+        await MetadataExporter.ExportMetadataToParquetAsync(
+            service,
+            bucketName,
+            outputPath,
+            prefix ?? "",
+            (count) => Console.WriteLine($"  Processed {count} objects..."));
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error exporting metadata: {ex.Message}");
+    }
+}
+
+async Task DisplayParquetInfo()
+{
+    Console.Write("\nEnter Parquet file path: ");
+    var filePath = Console.ReadLine();
+
+    if (string.IsNullOrWhiteSpace(filePath))
+    {
+        Console.WriteLine("File path is required.");
+        return;
+    }
+
+    try
+    {
+        await MetadataExporter.DisplayParquetInfoAsync(filePath);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error reading Parquet file: {ex.Message}");
     }
 }
