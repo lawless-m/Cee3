@@ -39,3 +39,4 @@ credentials
 # OS files
 .DS_Store
 Thumbs.db
+ramsden-devstorage.parquet

@@ -33,6 +33,38 @@ public class MetadataExporter
     }
 
     /// <summary>
+    /// Infers content type from file extension
+    /// </summary>
+    private static string InferContentType(string key)
+    {
+        var extension = Path.GetExtension(key).ToLowerInvariant();
+        return extension switch
+        {
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".png" => "image/png",
+            ".gif" => "image/gif",
+            ".bmp" => "image/bmp",
+            ".webp" => "image/webp",
+            ".svg" => "image/svg+xml",
+            ".pdf" => "application/pdf",
+            ".txt" => "text/plain",
+            ".html" or ".htm" => "text/html",
+            ".css" => "text/css",
+            ".js" => "application/javascript",
+            ".json" => "application/json",
+            ".xml" => "application/xml",
+            ".zip" => "application/zip",
+            ".tar" => "application/x-tar",
+            ".gz" => "application/gzip",
+            ".mp4" => "video/mp4",
+            ".mp3" => "audio/mpeg",
+            ".wav" => "audio/wav",
+            ".csv" => "text/csv",
+            _ => "application/octet-stream"
+        };
+    }
+
+    /// <summary>
     /// Collects metadata from S3 objects and exports to Parquet file
     /// </summary>
     public static async Task ExportMetadataToParquetAsync(
@@ -58,18 +90,22 @@ public class MetadataExporter
             return;
         }
 
-        // Collect detailed metadata for each object
-        var metadataList = new List<S3ObjectMetadata>();
+        // Process and write in batches to manage memory for large datasets
+        const int batchSize = 50000; // Per Parquet skill recommendation
+        var metadataBatch = new List<S3ObjectMetadata>(batchSize);
         int processed = 0;
+        bool isFirstBatch = true;
 
-        Console.WriteLine("Fetching detailed metadata...");
+        Console.WriteLine($"Processing and writing in batches of {batchSize:N0}...");
+
         foreach (var s3Object in s3Objects)
         {
             try
             {
-                var metadata = await s3Service.GetObjectMetadataAsync(bucketName, s3Object.Key);
+                // Infer content type from file extension (avoid making 1.4M API calls!)
+                string contentType = InferContentType(s3Object.Key);
 
-                metadataList.Add(new S3ObjectMetadata
+                metadataBatch.Add(new S3ObjectMetadata
                 {
                     BucketName = bucketName,
                     Key = s3Object.Key,
@@ -77,45 +113,62 @@ public class MetadataExporter
                     LastModified = s3Object.LastModified ?? DateTime.UtcNow,
                     ETag = s3Object.ETag?.Trim('"'),
                     StorageClass = s3Object.StorageClass?.Value ?? "STANDARD",
-                    ContentType = metadata.Headers.ContentType ?? "application/octet-stream",
+                    ContentType = contentType,
                     Owner = s3Object.Owner?.DisplayName,
                     IsLatest = true,
-                    VersionId = metadata.VersionId
+                    VersionId = null // Not available from ListObjects
                 });
 
-                processed++;
-                if (progressCallback != null && processed % 10 == 0)
+                // Write batch when it reaches batchSize
+                if (metadataBatch.Count >= batchSize)
                 {
-                    progressCallback(processed);
+                    await WriteBatchToParquetAsync(metadataBatch, outputFilePath, isFirstBatch);
+                    processed += metadataBatch.Count;
+
+                    if (progressCallback != null)
+                    {
+                        progressCallback(processed);
+                    }
+
+                    // Clear batch and force GC for large datasets (per Parquet skill)
+                    metadataBatch.Clear();
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+
+                    isFirstBatch = false;
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Warning: Could not get metadata for {s3Object.Key}: {ex.Message}");
+                Console.WriteLine($"Warning: Could not process metadata for {s3Object.Key}: {ex.Message}");
             }
         }
 
-        Console.WriteLine($"Collected metadata for {metadataList.Count} objects");
+        // Write remaining records
+        if (metadataBatch.Count > 0)
+        {
+            await WriteBatchToParquetAsync(metadataBatch, outputFilePath, isFirstBatch);
+            processed += metadataBatch.Count;
+            metadataBatch.Clear();
+        }
 
-        // Write to Parquet file
-        await WriteMetadataToParquetAsync(metadataList, outputFilePath);
+        Console.WriteLine($"✓ Processed and wrote {processed:N0} objects to Parquet file");
     }
 
     /// <summary>
-    /// Writes metadata to a Parquet file
+    /// Writes a batch of metadata to Parquet file (append mode for subsequent batches)
     /// </summary>
-    private static async Task WriteMetadataToParquetAsync(
+    private static async Task WriteBatchToParquetAsync(
         List<S3ObjectMetadata> metadata,
-        string outputFilePath)
+        string outputFilePath,
+        bool isFirstBatch)
     {
-        Console.WriteLine($"Writing to Parquet file: {outputFilePath}");
-
         // Define Parquet schema
         var schema = new ParquetSchema(
             new DataField<string>("bucket_name"),
             new DataField<string>("key"),
             new DataField<long>("size"),
-            new DataField<DateTimeOffset>("last_modified"),
+            new DataField<DateTime>("last_modified"),
             new DataField<string>("etag"),
             new DataField<string>("storage_class"),
             new DataField<string>("content_type"),
@@ -128,7 +181,7 @@ public class MetadataExporter
         var bucketNames = metadata.Select(m => m.BucketName).ToArray();
         var keys = metadata.Select(m => m.Key).ToArray();
         var sizes = metadata.Select(m => m.Size).ToArray();
-        var lastModifieds = metadata.Select(m => new DateTimeOffset(m.LastModified)).ToArray();
+        var lastModifieds = metadata.Select(m => m.LastModified).ToArray();
         var etags = metadata.Select(m => m.ETag).ToArray();
         var storageClasses = metadata.Select(m => m.StorageClass).ToArray();
         var contentTypes = metadata.Select(m => m.ContentType).ToArray();
@@ -136,10 +189,15 @@ public class MetadataExporter
         var isLatests = metadata.Select(m => m.IsLatest).ToArray();
         var versionIds = metadata.Select(m => m.VersionId ?? "").ToArray();
 
-        // Write Parquet file
-        using (Stream fileStream = File.Create(outputFilePath))
+        // Open file for writing (create new or append)
+        // Per Parquet skill: Use FileAccess.ReadWrite when appending because ParquetWriter
+        // needs to read existing file metadata to validate schema compatibility
+        FileMode fileMode = isFirstBatch ? FileMode.Create : FileMode.Open;
+        FileAccess fileAccess = isFirstBatch ? FileAccess.Write : FileAccess.ReadWrite;
+
+        using (Stream fileStream = new FileStream(outputFilePath, fileMode, fileAccess))
         {
-            using (var parquetWriter = await ParquetWriter.CreateAsync(schema, fileStream))
+            using (var parquetWriter = await ParquetWriter.CreateAsync(schema, fileStream, append: !isFirstBatch))
             {
                 // Create row group
                 using (ParquetRowGroupWriter groupWriter = parquetWriter.CreateRowGroup())
@@ -158,23 +216,12 @@ public class MetadataExporter
             }
         }
 
-        var fileInfo = new FileInfo(outputFilePath);
-        Console.WriteLine($"✓ Parquet file created successfully!");
-        Console.WriteLine($"  File size: {fileInfo.Length:N0} bytes");
-        Console.WriteLine($"  Records: {metadata.Count}");
-        Console.WriteLine($"  Schema: {schema.Fields.Count} columns");
-        Console.WriteLine();
-        Console.WriteLine("Columns:");
-        Console.WriteLine("  - bucket_name (string)");
-        Console.WriteLine("  - key (string)");
-        Console.WriteLine("  - size (int64)");
-        Console.WriteLine("  - last_modified (timestamp)");
-        Console.WriteLine("  - etag (string)");
-        Console.WriteLine("  - storage_class (string)");
-        Console.WriteLine("  - content_type (string)");
-        Console.WriteLine("  - owner (string)");
-        Console.WriteLine("  - is_latest (boolean)");
-        Console.WriteLine("  - version_id (string)");
+        // Show summary only on first batch
+        if (isFirstBatch)
+        {
+            Console.WriteLine($"✓ Started writing to Parquet file: {outputFilePath}");
+            Console.WriteLine($"  Schema: {schema.Fields.Count} columns");
+        }
     }
 
     /// <summary>

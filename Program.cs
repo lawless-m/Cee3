@@ -4,113 +4,137 @@ using Amazon.Runtime.CredentialManagement;
 using Microsoft.Extensions.Configuration;
 using Cee3;
 
-// Build configuration
+// Parse command line arguments
+string? configFile = null;
+string? exportBucket = null;
+string? exportPrefix = null;
+string? exportOutput = null;
+
+for (int i = 0; i < args.Length; i++)
+{
+    if (args[i] == "--config" && i + 1 < args.Length)
+    {
+        configFile = args[i + 1];
+    }
+    else if (args[i] == "--export-bucket" && i + 1 < args.Length)
+    {
+        exportBucket = args[i + 1];
+    }
+    else if (args[i] == "--export-prefix" && i + 1 < args.Length)
+    {
+        exportPrefix = args[i + 1];
+    }
+    else if (args[i] == "--export-output" && i + 1 < args.Length)
+    {
+        exportOutput = args[i + 1];
+    }
+}
+
+// Require --config parameter
+if (string.IsNullOrEmpty(configFile))
+{
+    Console.WriteLine("Error: Configuration file required");
+    Console.WriteLine();
+    Console.WriteLine("Usage:");
+    Console.WriteLine("  Interactive mode:");
+    Console.WriteLine("    dotnet run -- --config <config-file.json>");
+    Console.WriteLine();
+    Console.WriteLine("  Export to Parquet:");
+    Console.WriteLine("    dotnet run -- --config <config-file.json> --export-bucket <bucket> --export-output <file.parquet> [--export-prefix <prefix>]");
+    Console.WriteLine();
+    Console.WriteLine("Examples:");
+    Console.WriteLine("  dotnet run -- --config s3-config.json");
+    Console.WriteLine("  dotnet run -- --config s3-config.json --export-bucket mybucket --export-output data.parquet");
+    Console.WriteLine("  dotnet run -- --config s3-config.json --export-bucket mybucket --export-prefix images/ --export-output images.parquet");
+    return;
+}
+
+// Check if config file exists
+if (!File.Exists(configFile))
+{
+    Console.WriteLine($"Error: Configuration file not found: {configFile}");
+    return;
+}
+
+// Build configuration from specified file only
+Console.WriteLine($"Using configuration file: {configFile}");
 var configuration = new ConfigurationBuilder()
     .SetBasePath(Directory.GetCurrentDirectory())
-    .AddJsonFile("appsettings.json", optional: true)
-    .AddJsonFile("appsettings.Development.json", optional: true)
-    .AddJsonFile("appsettings.Local.json", optional: true)
-    .AddJsonFile("appsettings.PublicTest.json", optional: true)
-    .AddEnvironmentVariables()
+    .AddJsonFile(configFile, optional: false)
     .Build();
 
-// Get AWS configuration
-var awsProfile = configuration["AWS:Profile"] ?? "default";
-var awsRegion = configuration["AWS:Region"] ?? "us-east-1";
-var useLocalEndpoint = bool.Parse(configuration["S3:UseLocalEndpoint"] ?? "false");
-var useAnonymousCredentials = bool.Parse(configuration["S3:UseAnonymousCredentials"] ?? "false");
-var localEndpoint = configuration["S3:LocalEndpoint"] ?? "http://localhost:9000";
-var localAccessKey = configuration["S3:LocalAccessKey"] ?? "minioadmin";
-var localSecretKey = configuration["S3:LocalSecretKey"] ?? "minioadmin";
+// Get AWS configuration - no fallbacks, all values must be in config file
+var awsRegion = configuration["AWS:Region"];
+var awsAccessKeyId = configuration["AWS:AccessKeyId"];
+var awsSecretAccessKey = configuration["AWS:SecretAccessKey"];
+
+// Validate required configuration
+if (string.IsNullOrEmpty(awsRegion))
+{
+    Console.WriteLine("Error: AWS:Region is required in configuration file");
+    return;
+}
+
+if (string.IsNullOrEmpty(awsAccessKeyId))
+{
+    Console.WriteLine("Error: AWS:AccessKeyId is required in configuration file");
+    return;
+}
+
+if (string.IsNullOrEmpty(awsSecretAccessKey))
+{
+    Console.WriteLine("Error: AWS:SecretAccessKey is required in configuration file");
+    return;
+}
 
 Console.WriteLine("=== Cee3 - Amazon S3 Access Tool ===");
-Console.WriteLine($"AWS Profile: {awsProfile}");
 Console.WriteLine($"AWS Region: {awsRegion}");
-
-if (useLocalEndpoint)
-{
-    Console.WriteLine($"Mode: LOCAL TESTING (MinIO)");
-    Console.WriteLine($"Endpoint: {localEndpoint}");
-}
-else if (useAnonymousCredentials)
-{
-    Console.WriteLine($"Mode: PUBLIC READ (Anonymous)");
-}
-else
-{
-    Console.WriteLine($"Mode: AWS S3");
-}
-
+Console.WriteLine($"Mode: AWS S3 (using configured credentials)");
 Console.WriteLine();
 
 try
 {
-    IAmazonS3 s3Client;
-
-    // Use local endpoint (MinIO) for testing
-    if (useLocalEndpoint)
-    {
-        Console.WriteLine("✓ Connecting to local S3-compatible server (MinIO)...");
-
-        var config = new AmazonS3Config
-        {
-            ServiceURL = localEndpoint,
-            ForcePathStyle = true, // Required for MinIO
-            AuthenticationRegion = awsRegion
-        };
-
-        var credentials = new Amazon.Runtime.BasicAWSCredentials(localAccessKey, localSecretKey);
-        s3Client = new AmazonS3Client(credentials, config);
-    }
-    // Use anonymous credentials for public buckets
-    else if (useAnonymousCredentials)
-    {
-        Console.WriteLine("✓ Connecting with anonymous credentials (public read access)...");
-
-        var config = new AmazonS3Config
-        {
-            RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(awsRegion)
-        };
-
-        s3Client = new AmazonS3Client(new Amazon.Runtime.AnonymousAWSCredentials(), config);
-    }
-    // Use real AWS S3 with credentials
-    else
-    {
-        // Create S3 client using AWS credentials
-        // This will look for credentials in the following order:
-        // 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
-        // 2. AWS credentials file (~/.aws/credentials)
-        // 3. IAM role (if running on EC2)
-
-        var credentialProfileStoreChain = new CredentialProfileStoreChain();
-        AWSCredentials? credentials = null;
-
-        if (credentialProfileStoreChain.TryGetAWSCredentials(awsProfile, out credentials))
-        {
-            Console.WriteLine($"✓ Successfully loaded AWS credentials from profile '{awsProfile}'");
-        }
-        else
-        {
-            Console.WriteLine($"⚠ Could not load profile '{awsProfile}', attempting to use environment variables or default credentials...");
-            // Try to get credentials from environment variables or instance profile
-            try
-            {
-                credentials = new Amazon.Runtime.EnvironmentVariablesAWSCredentials();
-            }
-            catch
-            {
-                // If environment variables aren't set, this will throw an exception
-                // In that case, let the S3 client use its default credential chain
-                credentials = null!;
-            }
-        }
-
-        s3Client = new AmazonS3Client(credentials, Amazon.RegionEndpoint.GetBySystemName(awsRegion));
-    }
+    // Create S3 client with credentials from config file
+    Console.WriteLine("✓ Connecting with credentials from configuration...");
+    var credentials = new Amazon.Runtime.BasicAWSCredentials(awsAccessKeyId, awsSecretAccessKey);
+    var s3Client = new AmazonS3Client(credentials, Amazon.RegionEndpoint.GetBySystemName(awsRegion));
 
     var s3Service = new S3Service(s3Client);
 
+    // Check if running in export mode (non-interactive)
+    if (!string.IsNullOrEmpty(exportBucket) && !string.IsNullOrEmpty(exportOutput))
+    {
+        Console.WriteLine("\n=== Export Mode ===");
+        Console.WriteLine($"Bucket: {exportBucket}");
+        Console.WriteLine($"Prefix: {exportPrefix ?? "(none)"}");
+        Console.WriteLine($"Output: {exportOutput}");
+        Console.WriteLine();
+
+        try
+        {
+            await MetadataExporter.ExportMetadataToParquetAsync(
+                s3Service,
+                exportBucket,
+                exportOutput,
+                exportPrefix ?? "",
+                (count) => Console.WriteLine($"  Processed {count:N0} objects..."));
+
+            var fileInfo = new FileInfo(exportOutput);
+            Console.WriteLine();
+            Console.WriteLine($"✓ Export complete!");
+            Console.WriteLine($"  File: {exportOutput}");
+            Console.WriteLine($"  Size: {fileInfo.Length:N0} bytes ({fileInfo.Length / 1024.0 / 1024.0:F2} MB)");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"\n✗ Error exporting metadata: {ex.Message}");
+            return;
+        }
+
+        return; // Exit after export
+    }
+
+    // Interactive mode - show menu
     Console.WriteLine("\n=== Available Operations ===");
     Console.WriteLine("1. List all buckets");
     Console.WriteLine("2. List objects in a bucket");
@@ -233,10 +257,10 @@ async Task ListBuckets(S3Service service)
 async Task ListObjects(S3Service service)
 {
     Console.Write("\nEnter bucket name: ");
-    var bucketName = Console.ReadLine();
+    var bucketName = Console.ReadLine()?.Trim();
 
     Console.Write("Enter prefix (optional, press Enter to skip): ");
-    var prefix = Console.ReadLine();
+    var prefix = Console.ReadLine()?.Trim();
 
     if (string.IsNullOrWhiteSpace(bucketName))
     {
@@ -265,10 +289,10 @@ async Task ListObjects(S3Service service)
 async Task GetMetadata(S3Service service)
 {
     Console.Write("\nEnter bucket name: ");
-    var bucketName = Console.ReadLine();
+    var bucketName = Console.ReadLine()?.Trim();
 
     Console.Write("Enter object key: ");
-    var key = Console.ReadLine();
+    var key = Console.ReadLine()?.Trim();
 
     if (string.IsNullOrWhiteSpace(bucketName) || string.IsNullOrWhiteSpace(key))
     {
@@ -282,13 +306,13 @@ async Task GetMetadata(S3Service service)
 async Task DownloadObject(S3Service service)
 {
     Console.Write("\nEnter bucket name: ");
-    var bucketName = Console.ReadLine();
+    var bucketName = Console.ReadLine()?.Trim();
 
     Console.Write("Enter object key: ");
-    var key = Console.ReadLine();
+    var key = Console.ReadLine()?.Trim();
 
     Console.Write("Enter local file path to save: ");
-    var localPath = Console.ReadLine();
+    var localPath = Console.ReadLine()?.Trim();
 
     if (string.IsNullOrWhiteSpace(bucketName) || string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(localPath))
     {
@@ -302,13 +326,13 @@ async Task DownloadObject(S3Service service)
 async Task UploadFile(S3Service service)
 {
     Console.Write("\nEnter local file path: ");
-    var localPath = Console.ReadLine();
+    var localPath = Console.ReadLine()?.Trim();
 
     Console.Write("Enter destination bucket name: ");
-    var bucketName = Console.ReadLine();
+    var bucketName = Console.ReadLine()?.Trim();
 
     Console.Write("Enter destination object key: ");
-    var key = Console.ReadLine();
+    var key = Console.ReadLine()?.Trim();
 
     if (string.IsNullOrWhiteSpace(localPath) || string.IsNullOrWhiteSpace(bucketName) || string.IsNullOrWhiteSpace(key))
     {
@@ -354,13 +378,13 @@ async Task UploadFile(S3Service service)
 async Task UploadText(S3Service service)
 {
     Console.Write("\nEnter text content: ");
-    var content = Console.ReadLine();
+    var content = Console.ReadLine()?.Trim();
 
     Console.Write("Enter destination bucket name: ");
-    var bucketName = Console.ReadLine();
+    var bucketName = Console.ReadLine()?.Trim();
 
     Console.Write("Enter destination object key: ");
-    var key = Console.ReadLine();
+    var key = Console.ReadLine()?.Trim();
 
     if (string.IsNullOrWhiteSpace(content) || string.IsNullOrWhiteSpace(bucketName) || string.IsNullOrWhiteSpace(key))
     {
@@ -374,10 +398,10 @@ async Task UploadText(S3Service service)
 async Task DeleteObject(S3Service service)
 {
     Console.Write("\nEnter bucket name: ");
-    var bucketName = Console.ReadLine();
+    var bucketName = Console.ReadLine()?.Trim();
 
     Console.Write("Enter object key to delete: ");
-    var key = Console.ReadLine();
+    var key = Console.ReadLine()?.Trim();
 
     if (string.IsNullOrWhiteSpace(bucketName) || string.IsNullOrWhiteSpace(key))
     {
@@ -399,16 +423,16 @@ async Task DeleteObject(S3Service service)
 async Task CopyObject(S3Service service)
 {
     Console.Write("\nEnter source bucket name: ");
-    var sourceBucket = Console.ReadLine();
+    var sourceBucket = Console.ReadLine()?.Trim();
 
     Console.Write("Enter source object key: ");
-    var sourceKey = Console.ReadLine();
+    var sourceKey = Console.ReadLine()?.Trim();
 
     Console.Write("Enter destination bucket name: ");
-    var destBucket = Console.ReadLine();
+    var destBucket = Console.ReadLine()?.Trim();
 
     Console.Write("Enter destination object key: ");
-    var destKey = Console.ReadLine();
+    var destKey = Console.ReadLine()?.Trim();
 
     if (string.IsNullOrWhiteSpace(sourceBucket) || string.IsNullOrWhiteSpace(sourceKey) ||
         string.IsNullOrWhiteSpace(destBucket) || string.IsNullOrWhiteSpace(destKey))
@@ -423,10 +447,10 @@ async Task CopyObject(S3Service service)
 async Task CheckExists(S3Service service)
 {
     Console.Write("\nEnter bucket name: ");
-    var bucketName = Console.ReadLine();
+    var bucketName = Console.ReadLine()?.Trim();
 
     Console.Write("Enter object key: ");
-    var key = Console.ReadLine();
+    var key = Console.ReadLine()?.Trim();
 
     if (string.IsNullOrWhiteSpace(bucketName) || string.IsNullOrWhiteSpace(key))
     {
@@ -449,13 +473,13 @@ async Task CheckExists(S3Service service)
 async Task ExportMetadataToParquet(S3Service service)
 {
     Console.Write("\nEnter bucket name: ");
-    var bucketName = Console.ReadLine();
+    var bucketName = Console.ReadLine()?.Trim();
 
     Console.Write("Enter prefix (optional, press Enter to skip): ");
-    var prefix = Console.ReadLine();
+    var prefix = Console.ReadLine()?.Trim();
 
     Console.Write("Enter output Parquet file path (e.g., /tmp/metadata.parquet): ");
-    var outputPath = Console.ReadLine();
+    var outputPath = Console.ReadLine()?.Trim();
 
     if (string.IsNullOrWhiteSpace(bucketName) || string.IsNullOrWhiteSpace(outputPath))
     {
@@ -481,7 +505,7 @@ async Task ExportMetadataToParquet(S3Service service)
 async Task DisplayParquetInfo()
 {
     Console.Write("\nEnter Parquet file path: ");
-    var filePath = Console.ReadLine();
+    var filePath = Console.ReadLine()?.Trim();
 
     if (string.IsNullOrWhiteSpace(filePath))
     {
@@ -502,13 +526,13 @@ async Task DisplayParquetInfo()
 async Task SmartUploadFile(S3Service service)
 {
     Console.Write("\nEnter local file path: ");
-    var localPath = Console.ReadLine();
+    var localPath = Console.ReadLine()?.Trim();
 
     Console.Write("Enter destination bucket name: ");
-    var bucketName = Console.ReadLine();
+    var bucketName = Console.ReadLine()?.Trim();
 
     Console.Write("Enter destination object key: ");
-    var key = Console.ReadLine();
+    var key = Console.ReadLine()?.Trim();
 
     if (string.IsNullOrWhiteSpace(localPath) || string.IsNullOrWhiteSpace(bucketName) || string.IsNullOrWhiteSpace(key))
     {
@@ -563,7 +587,7 @@ async Task SmartUploadFile(S3Service service)
 async Task BatchSmartUpload(S3Service service)
 {
     Console.Write("\nEnter directory path containing files to upload: ");
-    var dirPath = Console.ReadLine();
+    var dirPath = Console.ReadLine()?.Trim();
 
     if (string.IsNullOrWhiteSpace(dirPath) || !Directory.Exists(dirPath))
     {
@@ -572,17 +596,17 @@ async Task BatchSmartUpload(S3Service service)
     }
 
     Console.Write("Enter file pattern (e.g., *.jpg, *.* for all): ");
-    var pattern = Console.ReadLine();
+    var pattern = Console.ReadLine()?.Trim();
     if (string.IsNullOrWhiteSpace(pattern))
     {
         pattern = "*.*";
     }
 
     Console.Write("Enter destination bucket name: ");
-    var bucketName = Console.ReadLine();
+    var bucketName = Console.ReadLine()?.Trim();
 
     Console.Write("Enter key prefix (optional, e.g., images/): ");
-    var keyPrefix = Console.ReadLine();
+    var keyPrefix = Console.ReadLine()?.Trim();
 
     if (string.IsNullOrWhiteSpace(bucketName))
     {
@@ -617,7 +641,7 @@ async Task BatchSmartUpload(S3Service service)
 void DisplayCachedETagInfo()
 {
     Console.Write("\nEnter file path: ");
-    var filePath = Console.ReadLine();
+    var filePath = Console.ReadLine()?.Trim();
 
     if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
     {
