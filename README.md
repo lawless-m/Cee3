@@ -61,44 +61,16 @@ Prevent uploading files that already exist with identical content:
 
 ## Configuration
 
-The application supports multiple methods for AWS credential configuration:
+The application **requires** a configuration file specified via the `--config` parameter. No fallback credentials are supported.
 
-### Method 1: AWS Credentials File (Recommended)
-
-Create or edit `~/.aws/credentials`:
-
-```ini
-[default]
-aws_access_key_id = YOUR_ACCESS_KEY
-aws_secret_access_key = YOUR_SECRET_KEY
-```
-
-And `~/.aws/config`:
-
-```ini
-[default]
-region = us-east-1
-```
-
-### Method 2: Environment Variables
-
-Set the following environment variables:
-
-```bash
-export AWS_ACCESS_KEY_ID=your_access_key
-export AWS_SECRET_ACCESS_KEY=your_secret_key
-export AWS_REGION=us-east-1
-```
-
-### Method 3: Application Settings
-
-Edit `appsettings.json` or `appsettings.Development.json`:
+Create a JSON configuration file (e.g., `s3-config.json`):
 
 ```json
 {
   "AWS": {
-    "Profile": "default",
-    "Region": "us-east-1"
+    "Region": "eu-west-2",
+    "AccessKeyId": "YOUR_ACCESS_KEY_ID",
+    "SecretAccessKey": "YOUR_SECRET_ACCESS_KEY"
   },
   "S3": {
     "DefaultBucket": "my-bucket-name"
@@ -106,25 +78,29 @@ Edit `appsettings.json` or `appsettings.Development.json`:
 }
 ```
 
-**Note:** The application will attempt credentials in this order:
-1. AWS credentials file profile
-2. Environment variables
-3. IAM role (when running on EC2)
+**Required fields:**
+- `AWS:Region` - AWS region (e.g., "us-east-1", "eu-west-2")
+- `AWS:AccessKeyId` - Your AWS access key ID
+- `AWS:SecretAccessKey` - Your AWS secret access key
+
+**Security Note:** Keep your configuration file secure and never commit it to version control. Store it in a safe location outside your project directory.
 
 ## Usage
 
-Run the application:
+### Interactive Mode
+
+Run the application with a configuration file to access the interactive menu:
 
 ```bash
-dotnet run
+dotnet run -- --config /path/to/s3-config.json
 ```
 
 You'll be presented with an interactive menu:
 
 ```
 === Cee3 - Amazon S3 Access Tool ===
-AWS Profile: default
-AWS Region: us-east-1
+AWS Region: eu-west-2
+Mode: AWS S3 (using configured credentials)
 
 === Available Operations ===
 1. List all buckets
@@ -136,12 +112,37 @@ AWS Region: us-east-1
 7. Delete an object
 8. Copy an object
 9. Check if object exists
+10. Export metadata to Parquet file
+11. Display Parquet file info
+12. Smart upload (skip duplicates)
+13. Batch smart upload (multiple files)
+14. View cached ETag info for file
 0. Exit
 
-Select an operation (0-9):
+Select an operation (0-14):
 ```
 
-### Example Operations
+### Direct Export Mode (Non-Interactive)
+
+Export S3 bucket metadata directly to a Parquet file without the interactive menu:
+
+```bash
+# Export entire bucket
+dotnet run -- --config s3-config.json --export-bucket mybucket --export-output metadata.parquet
+
+# Export with prefix filter
+dotnet run -- --config s3-config.json --export-bucket mybucket --export-prefix images/ --export-output images.parquet
+```
+
+**Parameters:**
+- `--config` - Path to configuration file (required)
+- `--export-bucket` - S3 bucket name to export
+- `--export-output` - Output Parquet file path
+- `--export-prefix` - Optional: Only export objects with this prefix
+
+**Performance:** Exports process metadata for millions of objects in minutes using optimized batch processing (50,000 records per batch) without individual API calls per object.
+
+## Example Operations
 
 #### List All Buckets
 ```
