@@ -23,6 +23,8 @@ A .NET 8.0 console application for interacting with Amazon S3, providing full re
 - **Smart Upload** - Upload files with automatic duplicate detection (saves bandwidth and costs!)
 - **Batch Smart Upload** - Upload multiple files from a directory, skipping duplicates
 - **Export to Parquet** - Export S3 object metadata to Apache Parquet files for analytics
+  - Export metadata from a single bucket (with optional prefix filter)
+  - Export metadata from ALL buckets in your account
 - **View Parquet Files** - Display information about exported Parquet files
 
 ### Duplicate Detection with ETag Caching
@@ -132,13 +134,17 @@ dotnet run -- --config s3-config.json --export-bucket mybucket --export-output m
 
 # Export with prefix filter
 dotnet run -- --config s3-config.json --export-bucket mybucket --export-prefix images/ --export-output images.parquet
+
+# Export metadata from ALL buckets
+dotnet run -- --config s3-config.json --export-all-buckets --export-output all-buckets.parquet
 ```
 
 **Parameters:**
 - `--config` - Path to configuration file (required)
-- `--export-bucket` - S3 bucket name to export
+- `--export-bucket` - S3 bucket name to export (for single bucket export)
+- `--export-all-buckets` - Export metadata from all buckets in the account
 - `--export-output` - Output Parquet file path
-- `--export-prefix` - Optional: Only export objects with this prefix
+- `--export-prefix` - Optional: Only export objects with this prefix (only applies to single bucket export)
 
 **Performance:** Exports process metadata for millions of objects in minutes using optimized batch processing (50,000 records per batch) without individual API calls per object.
 

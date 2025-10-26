@@ -156,6 +156,114 @@ public class MetadataExporter
     }
 
     /// <summary>
+    /// Collects metadata from all S3 buckets and exports to a single Parquet file
+    /// </summary>
+    public static async Task ExportAllBucketsMetadataToParquetAsync(
+        S3Service s3Service,
+        string outputFilePath,
+        Action<string, int>? progressCallback = null)
+    {
+        Console.WriteLine("Listing all buckets...");
+        var buckets = await s3Service.ListBucketsAsync();
+        Console.WriteLine($"Found {buckets.Count} bucket(s)");
+
+        if (buckets.Count == 0)
+        {
+            Console.WriteLine("No buckets to export.");
+            return;
+        }
+
+        // Process and write in batches to manage memory for large datasets
+        const int batchSize = 50000;
+        var metadataBatch = new List<S3ObjectMetadata>(batchSize);
+        int totalProcessed = 0;
+        bool isFirstBatch = true;
+
+        Console.WriteLine($"Processing metadata from all buckets in batches of {batchSize:N0}...");
+        Console.WriteLine();
+
+        foreach (var bucket in buckets)
+        {
+            Console.WriteLine($"Processing bucket: {bucket.BucketName}");
+
+            try
+            {
+                // Get all objects in the bucket
+                var s3Objects = await s3Service.ListObjectsAsync(bucket.BucketName, "");
+                Console.WriteLine($"  Found {s3Objects.Count:N0} objects in {bucket.BucketName}");
+
+                int bucketProcessed = 0;
+
+                foreach (var s3Object in s3Objects)
+                {
+                    try
+                    {
+                        // Infer content type from file extension
+                        string contentType = InferContentType(s3Object.Key);
+
+                        metadataBatch.Add(new S3ObjectMetadata
+                        {
+                            BucketName = bucket.BucketName,
+                            Key = s3Object.Key,
+                            Size = s3Object.Size ?? 0,
+                            LastModified = s3Object.LastModified ?? DateTime.UtcNow,
+                            ETag = s3Object.ETag?.Trim('"'),
+                            StorageClass = s3Object.StorageClass?.Value ?? "STANDARD",
+                            ContentType = contentType,
+                            Owner = s3Object.Owner?.DisplayName,
+                            IsLatest = true,
+                            VersionId = null
+                        });
+
+                        bucketProcessed++;
+
+                        // Write batch when it reaches batchSize
+                        if (metadataBatch.Count >= batchSize)
+                        {
+                            await WriteBatchToParquetAsync(metadataBatch, outputFilePath, isFirstBatch);
+                            totalProcessed += metadataBatch.Count;
+
+                            if (progressCallback != null)
+                            {
+                                progressCallback(bucket.BucketName, totalProcessed);
+                            }
+
+                            // Clear batch and force GC for large datasets
+                            metadataBatch.Clear();
+                            GC.Collect();
+                            GC.WaitForPendingFinalizers();
+
+                            isFirstBatch = false;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"  Warning: Could not process metadata for {s3Object.Key}: {ex.Message}");
+                    }
+                }
+
+                Console.WriteLine($"  ✓ Processed {bucketProcessed:N0} objects from {bucket.BucketName}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  ✗ Error processing bucket {bucket.BucketName}: {ex.Message}");
+            }
+
+            Console.WriteLine();
+        }
+
+        // Write remaining records
+        if (metadataBatch.Count > 0)
+        {
+            await WriteBatchToParquetAsync(metadataBatch, outputFilePath, isFirstBatch);
+            totalProcessed += metadataBatch.Count;
+            metadataBatch.Clear();
+        }
+
+        Console.WriteLine($"✓ Total: Processed and wrote {totalProcessed:N0} objects from {buckets.Count} bucket(s) to Parquet file");
+    }
+
+    /// <summary>
     /// Writes a batch of metadata to Parquet file (append mode for subsequent batches)
     /// </summary>
     private static async Task WriteBatchToParquetAsync(
