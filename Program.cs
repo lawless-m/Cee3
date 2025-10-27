@@ -9,6 +9,7 @@ string? configFile = null;
 string? exportBucket = null;
 string? exportPrefix = null;
 string? exportOutput = null;
+bool exportAllBuckets = false;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -28,6 +29,10 @@ for (int i = 0; i < args.Length; i++)
     {
         exportOutput = args[i + 1];
     }
+    else if (args[i] == "--export-all-buckets")
+    {
+        exportAllBuckets = true;
+    }
 }
 
 // Require --config parameter
@@ -39,13 +44,17 @@ if (string.IsNullOrEmpty(configFile))
     Console.WriteLine("  Interactive mode:");
     Console.WriteLine("    dotnet run -- --config <config-file.json>");
     Console.WriteLine();
-    Console.WriteLine("  Export to Parquet:");
+    Console.WriteLine("  Export single bucket to Parquet:");
     Console.WriteLine("    dotnet run -- --config <config-file.json> --export-bucket <bucket> --export-output <file.parquet> [--export-prefix <prefix>]");
+    Console.WriteLine();
+    Console.WriteLine("  Export all buckets to Parquet:");
+    Console.WriteLine("    dotnet run -- --config <config-file.json> --export-all-buckets --export-output <file.parquet>");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  dotnet run -- --config s3-config.json");
     Console.WriteLine("  dotnet run -- --config s3-config.json --export-bucket mybucket --export-output data.parquet");
     Console.WriteLine("  dotnet run -- --config s3-config.json --export-bucket mybucket --export-prefix images/ --export-output images.parquet");
+    Console.WriteLine("  dotnet run -- --config s3-config.json --export-all-buckets --export-output all-buckets.parquet");
     return;
 }
 
@@ -102,7 +111,34 @@ try
     var s3Service = new S3Service(s3Client);
 
     // Check if running in export mode (non-interactive)
-    if (!string.IsNullOrEmpty(exportBucket) && !string.IsNullOrEmpty(exportOutput))
+    if (exportAllBuckets && !string.IsNullOrEmpty(exportOutput))
+    {
+        Console.WriteLine("\n=== Export Mode - All Buckets ===");
+        Console.WriteLine($"Output: {exportOutput}");
+        Console.WriteLine();
+
+        try
+        {
+            await MetadataExporter.ExportAllBucketsMetadataToParquetAsync(
+                s3Service,
+                exportOutput,
+                (bucketName, count) => Console.WriteLine($"  [{bucketName}] Processed {count:N0} objects..."));
+
+            var fileInfo = new FileInfo(exportOutput);
+            Console.WriteLine();
+            Console.WriteLine($"✓ Export complete!");
+            Console.WriteLine($"  File: {exportOutput}");
+            Console.WriteLine($"  Size: {fileInfo.Length:N0} bytes ({fileInfo.Length / 1024.0 / 1024.0:F2} MB)");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"\n✗ Error exporting metadata: {ex.Message}");
+            return;
+        }
+
+        return; // Exit after export
+    }
+    else if (!string.IsNullOrEmpty(exportBucket) && !string.IsNullOrEmpty(exportOutput))
     {
         Console.WriteLine("\n=== Export Mode ===");
         Console.WriteLine($"Bucket: {exportBucket}");
@@ -472,29 +508,48 @@ async Task CheckExists(S3Service service)
 
 async Task ExportMetadataToParquet(S3Service service)
 {
-    Console.Write("\nEnter bucket name: ");
-    var bucketName = Console.ReadLine()?.Trim();
-
-    Console.Write("Enter prefix (optional, press Enter to skip): ");
-    var prefix = Console.ReadLine()?.Trim();
+    Console.Write("\nExport all buckets or a specific bucket? (all/single): ");
+    var choice = Console.ReadLine()?.Trim().ToLower();
 
     Console.Write("Enter output Parquet file path (e.g., /tmp/metadata.parquet): ");
     var outputPath = Console.ReadLine()?.Trim();
 
-    if (string.IsNullOrWhiteSpace(bucketName) || string.IsNullOrWhiteSpace(outputPath))
+    if (string.IsNullOrWhiteSpace(outputPath))
     {
-        Console.WriteLine("Bucket name and output path are required.");
+        Console.WriteLine("Output path is required.");
         return;
     }
 
     try
     {
-        await MetadataExporter.ExportMetadataToParquetAsync(
-            service,
-            bucketName,
-            outputPath,
-            prefix ?? "",
-            (count) => Console.WriteLine($"  Processed {count} objects..."));
+        if (choice == "all")
+        {
+            await MetadataExporter.ExportAllBucketsMetadataToParquetAsync(
+                service,
+                outputPath,
+                (bucketName, count) => Console.WriteLine($"  [{bucketName}] Processed {count:N0} objects..."));
+        }
+        else
+        {
+            Console.Write("Enter bucket name: ");
+            var bucketName = Console.ReadLine()?.Trim();
+
+            Console.Write("Enter prefix (optional, press Enter to skip): ");
+            var prefix = Console.ReadLine()?.Trim();
+
+            if (string.IsNullOrWhiteSpace(bucketName))
+            {
+                Console.WriteLine("Bucket name is required.");
+                return;
+            }
+
+            await MetadataExporter.ExportMetadataToParquetAsync(
+                service,
+                bucketName,
+                outputPath,
+                prefix ?? "",
+                (count) => Console.WriteLine($"  Processed {count:N0} objects..."));
+        }
     }
     catch (Exception ex)
     {
